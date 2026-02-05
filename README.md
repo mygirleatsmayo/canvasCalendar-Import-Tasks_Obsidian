@@ -12,6 +12,7 @@ An AppleScript that imports assignments from your Canvas LMS calendar into Obsid
 - **Deduplication** — Tracks imported events to prevent duplicates
 - **Notifications** — Shows import summary after each run
 - **Reconfigure Anytime** — Hold **⌥ Option** key on launch to re-run setup
+- **Tasks Plugin Compatible** — Designed to work with [Obsidian Tasks](https://github.com/obsidian-tasks-group/obsidian-tasks) plugin
 
 ## Files
 
