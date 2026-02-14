@@ -8,27 +8,30 @@ property configPath : (POSIX path of (path to preferences folder)) & "com.canvas
 -- MAIN ENTRY POINT
 -- ============================================================================
 on run
-	-- Check if Option key is held (for re-setup)
-	set optionDown to false
-	try
-		set optionDown to (do shell script "python3 -c \"import Quartz; print(Quartz.CGEventSourceFlagsState(Quartz.kCGEventSourceStateCombinedSessionState) & Quartz.kCGEventFlagMaskAlternate)\"") is not "0"
-	end try
-	
 	-- Load config or run setup
 	set config to loadConfig()
-	
-	if config is missing value or optionDown then
+
+	if config is missing value then
+		-- First run: must configure
 		set config to runSetupWizard()
 		if config is missing value then return -- User cancelled
 		saveConfig(config)
+	else
+		-- Config exists: offer quick choice
+		display dialog "Canvas Calendar → Obsidian Import" buttons {"Reconfigure…", "Run Import"} default button "Run Import" with title "Canvas Import"
+		if button returned of result is "Reconfigure…" then
+			set config to runSetupWizard()
+			if config is missing value then return -- User cancelled
+			saveConfig(config)
+		end if
 	end if
-	
+
 	-- Run import
-	set result to runImport(config)
-	
+	set importResult to runImport(config)
+
 	-- Show notification
-	set importCount to item 1 of result
-	set rescheduleCount to item 2 of result
+	set importCount to item 1 of importResult
+	set rescheduleCount to item 2 of importResult
 	showNotification(importCount, rescheduleCount)
 end run
 
@@ -44,32 +47,32 @@ This wizard will help you set up:
 • Your Obsidian vault location
 • Class identifiers and todo files" buttons {"Cancel", "Begin Setup"} default button "Begin Setup" with title "Setup Wizard" with icon note
 	if button returned of result is "Cancel" then return missing value
-	
+
 	-- Step 1: Calendar Selection
 	set calendarName to selectCalendar()
 	if calendarName is missing value then return missing value
-	
+
 	-- Step 2: Vault Path
 	set vaultPath to selectVaultPath()
 	if vaultPath is missing value then return missing value
-	
+
 	-- Step 3: Log File
 	set logPath to setupLogFile(vaultPath)
 	if logPath is missing value then return missing value
-	
+
 	-- Step 4: Classes
 	set classList to setupClasses(vaultPath)
 	if classList is missing value then return missing value
-	
+
 	-- Build config
-	return {calendarName:calendarName, vaultPath:vaultPath, logPath:logPath, classes:classList}
+	return {calendarName:calendarName, vaultPath:vaultPath, logPath:logPath, classEntries:classList}
 end runSetupWizard
 
 on selectCalendar()
 	tell application "Calendar"
 		set calNames to name of every calendar
 	end tell
-	
+
 	set chosenCal to choose from list calNames with prompt "Select the calendar containing Canvas assignments:" with title "Calendar Selection"
 	if chosenCal is false then return missing value
 	return item 1 of chosenCal
@@ -84,41 +87,53 @@ end selectVaultPath
 on setupLogFile(vaultPath)
 	set logFileName to "canvasCalendarLog.md"
 	set defaultLogPath to vaultPath & logFileName
-	
+
 	display dialog "Log File Setup
 
 The log file tracks imported events to prevent duplicates.
 
 Default location:
 " & defaultLogPath buttons {"Cancel", "Use Default", "Choose Location"} default button "Use Default" with title "Log File"
-	
+
 	set choice to button returned of result
 	if choice is "Cancel" then return missing value
-	
+
 	if choice is "Use Default" then
 		-- Create if doesn't exist
 		do shell script "touch " & quoted form of defaultLogPath
 		return defaultLogPath
 	else
-		set chosenFile to choose file name with prompt "Save log file as:" default name logFileName default location (POSIX file vaultPath as alias)
-		return POSIX path of chosenFile
+		display dialog "Do you have an existing log file?" buttons {"Cancel", "Yes, Select It", "No, Create New"} default button "Yes, Select It" with title "Log File"
+		set locChoice to button returned of result
+		if locChoice is "Cancel" then return missing value
+
+		if locChoice is "Yes, Select It" then
+			set chosenFile to choose file with prompt "Select your existing log file:" of type {"md", "txt"}
+			return POSIX path of chosenFile
+		else
+			set chosenFile to choose file name with prompt "Save new log file as:" default name logFileName default location (POSIX file vaultPath as alias)
+			set newPath to POSIX path of chosenFile
+			do shell script "touch " & quoted form of newPath
+			return newPath
+		end if
 	end if
 end setupLogFile
 
 on setupClasses(vaultPath)
 	set classList to {}
 	set addMore to true
-	
+
 	repeat while addMore
 		-- Get class identifier
-		display dialog "Enter the class identifier string that appears in Canvas event titles.
+		display dialog "Enter ONE class identifier as it appears in Canvas event titles.
 
-Examples: ECON 112, BUSL 101, STAT-201
+Example: ECON 112
 
-This is used to match events to the correct todo file." default answer "" buttons {"Cancel", "Next"} default button "Next" with title "Class Setup"
-		if button returned of result is "Cancel" then return missing value
-		set classID to text returned of result
-		
+You can add more classes after this one." default answer "" buttons {"Cancel", "Next"} default button "Next" with title "Class Setup"
+		set dlgResult to result
+		if button returned of dlgResult is "Cancel" then return missing value
+		set classID to text returned of dlgResult
+
 		if classID is "" then
 			display dialog "Class identifier cannot be empty." buttons {"OK"} with icon stop
 		else
@@ -128,17 +143,18 @@ This is used to match events to the correct todo file." default answer "" button
 Leave blank to use \"" & classID & "\"
 
 Examples: Macroeconomics, Statistics I" default answer "" buttons {"Cancel", "Next"} default button "Next" with title "Display Name"
-			if button returned of result is "Cancel" then return missing value
-			set prettyName to text returned of result
+			set dlgResult to result
+			if button returned of dlgResult is "Cancel" then return missing value
+			set prettyName to text returned of dlgResult
 			if prettyName is "" then set prettyName to classID
-			
+
 			-- Get todo file
 			set todoPath to setupTodoFile(vaultPath, prettyName)
 			if todoPath is missing value then return missing value
-			
+
 			-- Add to list
 			set end of classList to {identifier:classID, displayName:prettyName, todoPath:todoPath}
-			
+
 			-- Add another?
 			display dialog "Class \"" & prettyName & "\" configured.
 
@@ -146,22 +162,23 @@ Add another class?" buttons {"Done", "Add Another"} default button "Add Another"
 			if button returned of result is "Done" then set addMore to false
 		end if
 	end repeat
-	
+
 	return classList
 end setupClasses
 
 on setupTodoFile(vaultPath, className)
 	display dialog "Todo file for " & className & ":" buttons {"Cancel", "Create New", "Select Existing"} default button "Create New" with title "Todo File"
-	
+
 	set choice to button returned of result
 	if choice is "Cancel" then return missing value
-	
+
 	if choice is "Create New" then
 		set defaultName to "todo" & my sanitizeFilename(className) & ".md"
 		set newFile to choose file name with prompt "Create todo file for " & className & ":" default name defaultName default location (POSIX file vaultPath as alias)
 		set newPath to POSIX path of newFile
 		-- Create with header
-		do shell script "echo '# " & className & " Assignments\n' > " & quoted form of newPath
+		do shell script "echo '# " & className & " Assignments
+' > " & quoted form of newPath
 		return newPath
 	else
 		set existingFile to choose file with prompt "Select existing todo file for " & className & ":" of type {"md", "txt"}
@@ -185,7 +202,7 @@ on loadConfig()
 		set vaultPath to do shell script "defaults read " & quoted form of configPath & " vaultPath"
 		set logPath to do shell script "defaults read " & quoted form of configPath & " logPath"
 		set classCount to (do shell script "defaults read " & quoted form of configPath & " classCount") as integer
-		
+
 		set classList to {}
 		repeat with i from 0 to (classCount - 1)
 			set classID to do shell script "defaults read " & quoted form of configPath & " class" & i & "_identifier"
@@ -193,8 +210,8 @@ on loadConfig()
 			set todoPath to do shell script "defaults read " & quoted form of configPath & " class" & i & "_todoPath"
 			set end of classList to {identifier:classID, displayName:displayName, todoPath:todoPath}
 		end repeat
-		
-		return {calendarName:calendarName, vaultPath:vaultPath, logPath:logPath, classes:classList}
+
+		return {calendarName:calendarName, vaultPath:vaultPath, logPath:logPath, classEntries:classList}
 	on error
 		return missing value
 	end try
@@ -202,19 +219,19 @@ end loadConfig
 
 on saveConfig(config)
 	-- Write each key
-	do shell script "defaults write " & quoted form of configPath & " calendarName " & quoted form of (calendarName of config)
-	do shell script "defaults write " & quoted form of configPath & " vaultPath " & quoted form of (vaultPath of config)
-	do shell script "defaults write " & quoted form of configPath & " logPath " & quoted form of (logPath of config)
-	
-	set classList to classes of config
+	do shell script "defaults write " & quoted form of configPath & " calendarName -string " & quoted form of (calendarName of config)
+	do shell script "defaults write " & quoted form of configPath & " vaultPath -string " & quoted form of (vaultPath of config)
+	do shell script "defaults write " & quoted form of configPath & " logPath -string " & quoted form of (logPath of config)
+
+	set classList to classEntries of config
 	do shell script "defaults write " & quoted form of configPath & " classCount -int " & (count of classList)
-	
+
 	repeat with i from 1 to count of classList
 		set classItem to item i of classList
 		set idx to (i - 1)
-		do shell script "defaults write " & quoted form of configPath & " class" & idx & "_identifier " & quoted form of (identifier of classItem)
-		do shell script "defaults write " & quoted form of configPath & " class" & idx & "_displayName " & quoted form of (displayName of classItem)
-		do shell script "defaults write " & quoted form of configPath & " class" & idx & "_todoPath " & quoted form of (todoPath of classItem)
+		do shell script "defaults write " & quoted form of configPath & " class" & idx & "_identifier -string " & quoted form of (identifier of classItem)
+		do shell script "defaults write " & quoted form of configPath & " class" & idx & "_displayName -string " & quoted form of (displayName of classItem)
+		do shell script "defaults write " & quoted form of configPath & " class" & idx & "_todoPath -string " & quoted form of (todoPath of classItem)
 	end repeat
 end saveConfig
 
@@ -223,8 +240,8 @@ end saveConfig
 -- ============================================================================
 on runImport(config)
 	set logFile to logPath of config
-	set classList to classes of config
-	
+	set classList to classEntries of config
+
 	-- Read Log File
 	set logContent to ""
 	try
@@ -232,49 +249,49 @@ on runImport(config)
 	on error
 		do shell script "touch " & quoted form of logFile
 	end try
-	
+
 	-- Parse log records
 	set logRecords to parseLogRecords(logContent)
-	
+
 	-- Initialize buffers for each class
 	set classBuffers to {}
 	repeat with classItem in classList
 		set end of classBuffers to {classRef:classItem, buffer:""}
 	end repeat
-	
+
 	set logBuffer to ""
 	set importCount to 0
 	set rescheduleCount to 0
-	
+
 	tell application "Calendar"
 		if not (exists calendar (calendarName of config)) then
 			display dialog "Calendar '" & (calendarName of config) & "' not found." buttons {"OK"} default button "OK" with icon stop
 			return {0, 0}
 		end if
-		
+
 		set todayDate to current date
 		set searchStartDate to todayDate - (21 * days)
 		set endDate to todayDate + (365 * days)
-		
+
 		set theEvents to (every event of calendar (calendarName of config) whose start date ≥ searchStartDate and start date ≤ endDate)
-		
+
 		repeat with anEvent in theEvents
 			set evtID to uid of anEvent
 			set rawTitle to summary of anEvent
 			set evtStart to start date of anEvent
-			
+
 			-- Format Date (YYYY-MM-DD)
 			set y to year of evtStart
 			set m to text -2 thru -1 of ("0" & (month of evtStart as integer))
 			set d to text -2 thru -1 of ("0" & (day of evtStart))
 			set dateString to (y as string) & "-" & m & "-" & d
-			
+
 			-- Clean title
 			set cleanTitle to my cleanTitleRegex(rawTitle)
-			
+
 			-- Check existing
 			set existingDate to my getDateForID(logRecords, evtID)
-			
+
 			-- Find matching class
 			set matchedClass to missing value
 			set matchedBuffer to missing value
@@ -287,7 +304,7 @@ on runImport(config)
 					exit repeat
 				end if
 			end repeat
-			
+
 			if matchedClass is not missing value then
 				if existingDate is "" then
 					-- NEW EVENT
@@ -304,18 +321,18 @@ on runImport(config)
 			end if
 		end repeat
 	end tell
-	
+
 	-- Write buffers to files
 	repeat with bufferItem in classBuffers
 		if (buffer of bufferItem) is not "" then
 			my appendToFile(todoPath of (classRef of bufferItem), linefeed & (buffer of bufferItem))
 		end if
 	end repeat
-	
+
 	if logBuffer is not "" then
 		my appendToFile(logFile, linefeed & logBuffer)
 	end if
-	
+
 	return {importCount, rescheduleCount}
 end runImport
 
@@ -324,7 +341,7 @@ end runImport
 -- ============================================================================
 on showNotification(importCount, rescheduleCount)
 	set msg to ""
-	
+
 	if importCount is 0 and rescheduleCount is 0 then
 		set msg to "No new assignments."
 	else
@@ -339,8 +356,8 @@ on showNotification(importCount, rescheduleCount)
 		if (importCount + rescheduleCount) > 1 then set msg to msg & "s"
 		set msg to msg & "."
 	end if
-	
-	display notification msg with title "Canvas Import" subtitle "Hold ⌥ Option to reconfigure"
+
+	display notification msg with title "Canvas Import"
 end showNotification
 
 -- ============================================================================
@@ -349,12 +366,12 @@ end showNotification
 on parseLogRecords(logContent)
 	set logRecords to {}
 	if logContent is "" then return logRecords
-	
+
 	set oldDelimiters to AppleScript's text item delimiters
 	set AppleScript's text item delimiters to linefeed
 	set logLines to text items of logContent
 	set AppleScript's text item delimiters to oldDelimiters
-	
+
 	repeat with aLine in logLines
 		set lineText to aLine as string
 		if lineText contains "|" then
@@ -368,7 +385,7 @@ on parseLogRecords(logContent)
 			set end of logRecords to {id:lineText, logDate:""}
 		end if
 	end repeat
-	
+
 	return logRecords
 end parseLogRecords
 
